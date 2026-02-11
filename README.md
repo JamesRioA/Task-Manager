@@ -25,7 +25,7 @@ A high-performance, event-driven task management system built with **Laravel 10*
 ### 1. Backend Requirements
 1.  **Clone the Repository**:
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/JamesRioA/Task-Manager.git
     cd Task-and-Workload-Manager
     ```
 2.  **Install Dependencies**:
