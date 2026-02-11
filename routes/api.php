@@ -23,8 +23,9 @@ Route::middleware('auth:sanctum')->group(function () {
         return User::where('role', 'employee')->get();
     });
     
-    Route::get('/tasks', [TaskController::class, 'index']); // For Admin Dashboard
+    Route::get('/tasks', [TaskController::class, 'index']);
     Route::post('/tasks', [TaskController::class, 'store']);
     Route::patch('/tasks/{task}/status', [TaskController::class, 'updateStatus']);
+    Route::put('/tasks/{task}', [TaskController::class, 'update']);
     Route::get('/my-tasks', [TaskController::class, 'myTasks']);
 });

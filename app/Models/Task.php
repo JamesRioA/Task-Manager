@@ -14,10 +14,16 @@ class Task extends Model
         'title',
         'description',
         'status',
+        'completed_by',
     ];
 
     public function users(): BelongsToMany
     {
         return $this->belongsToMany(User::class);
+    }
+
+    public function completer()
+    {
+        return $this->belongsTo(User::class, 'completed_by');
     }
 }

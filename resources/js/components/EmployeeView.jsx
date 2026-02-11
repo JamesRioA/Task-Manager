@@ -1,176 +1,150 @@
 import React, { useState, useEffect } from 'react';
 import {
-    Grid, Card, CardContent, Typography, Button,
-    Chip, Stack, Box, LinearProgress, Paper, Divider
+    Grid, Card, CardContent, Typography, Box, Chip, Stack, Button,
+    LinearProgress, Container, alpha
 } from '@mui/material';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import AssignmentIcon from '@mui/icons-material/Assignment';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import { DndContext, closestCorners, PointerSensor, useSensor, useSensors, DragOverlay, useDroppable } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import api from '../api/axios';
-import { useAuth } from '../context/AuthContext'; // Required to identify the current user
+import { useAuth } from '../context/AuthContext';
+import { echo } from '../utils/echo';
+import AssignmentRoundedIcon from '@mui/icons-material/AssignmentRounded';
+import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+
+const statusConfig = {
+    pending: { color: '#4f46e5', bg: 'rgba(79,70,229,0.04)', label: 'TO DO', dot: '#818cf8' },
+    in_progress: { color: '#f59e0b', bg: 'rgba(245,158,11,0.04)', label: 'IN PROGRESS', dot: '#fbbf24' },
+    completed: { color: '#10b981', bg: 'rgba(16,185,129,0.04)', label: 'COMPLETED', dot: '#34d399' },
+};
+
+const SortableTaskCard = ({ task, color, onStatusUpdate }) => {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
+    const style = { transform: CSS.Translate.toString(transform), transition, opacity: isDragging ? 0.3 : 1, cursor: 'grab' };
+    const isCompleted = task.status === 'completed';
+
+    return (
+        <Card ref={setNodeRef} style={style} {...attributes} {...listeners} elevation={0} sx={{ mb: 2, borderLeft: `4px solid ${color}`, '&:active': { cursor: 'grabbing' } }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>{task.title}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: isCompleted ? 0 : 1.5 }}>
+                    {task.description || "No description."}
+                </Typography>
+                {!isCompleted && (
+                    <Button fullWidth variant="contained" disableElevation size="small"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={() => onStatusUpdate(task.id, task.status === 'pending' ? 'in_progress' : 'completed')}
+                        sx={{ background: task.status === 'pending' ? 'linear-gradient(135deg, #4f46e5, #6366f1)' : 'linear-gradient(135deg, #059669, #10b981)' }}
+                    >
+                        {task.status === 'pending' ? 'Start' : 'Mark Complete'}
+                    </Button>
+                )}
+            </CardContent>
+        </Card>
+    );
+};
+
+const KanbanColumn = ({ status, tasks, onStatusUpdate }) => {
+    const config = statusConfig[status];
+    const { setNodeRef } = useDroppable({ id: status });
+
+    return (
+        <Grid item xs={12} lg={4}>
+            <Box ref={setNodeRef} sx={{ p: 2.5, borderRadius: '12px', bgcolor: config.bg, border: '1px solid', borderColor: 'divider', minHeight: '70vh' }}>
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 3 }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                        <FiberManualRecordIcon sx={{ fontSize: 10, color: config.dot }} />
+                        <Typography variant="subtitle1" sx={{ fontWeight: 800, color: config.color }}>{config.label}</Typography>
+                    </Stack>
+                    <Chip label={tasks.length} size="small" sx={{ fontWeight: 800, bgcolor: alpha(config.color, 0.1), color: config.color }} />
+                </Stack>
+                <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+                    <Box sx={{ minHeight: '50vh' }}>
+                        {tasks.map(task => <SortableTaskCard key={task.id} task={task} color={config.color} onStatusUpdate={onStatusUpdate} />)}
+                    </Box>
+                </SortableContext>
+            </Box>
+        </Grid>
+    );
+};
 
 export default function EmployeeView() {
+    const { user } = useAuth();
     const [tasks, setTasks] = useState([]);
+    const [activeId, setActiveId] = useState(null);
     const [loading, setLoading] = useState(true);
-    const { user } = useAuth(); // Access the logged-in user's data
 
-    // 1. Fetching Logic with Cache Busting
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
     const fetchMyTasks = async () => {
-        try {
-            const cacheBuster = `?t=${new Date().getTime()}`;
-            const { data } = await api.get(`/my-tasks${cacheBuster}`);
-            setTasks(data);
-        } catch (error) {
-            console.error("Error loading tasks", error);
-        } finally {
-            setLoading(false);
-        }
+        try { const { data } = await api.get(`/my-tasks?t=${Date.now()}`); setTasks(data); } catch (error) { console.error(error); } finally { setLoading(false); }
     };
 
-    // 2. Real-time & Polling Logic
+    const updateTaskLocally = (updatedTask) => {
+        const isMyTask = updatedTask.users?.some(u => u.id === user.id);
+        setTasks(prev => {
+            const exists = prev.some(t => t.id === updatedTask.id);
+            if (isMyTask) {
+                if (exists) return prev.map(t => t.id === updatedTask.id ? updatedTask : t);
+                return [updatedTask, ...prev];
+            }
+            return prev.filter(t => t.id !== updatedTask.id);
+        });
+    };
+
     useEffect(() => {
         fetchMyTasks();
 
-        // Backup Polling (Safety Net)
-        const interval = setInterval(() => {
-            fetchMyTasks();
-        }, 5000);
+        // REVERB LISTENERS [cite: 2025-12-10]
+        const channel = echo.channel('tasks');
+        channel.listen('TaskStatusUpdated', (e) => updateTaskLocally(e.task))
+            .listen('TaskUpdated', (e) => updateTaskLocally(e.task))
+            .listen('TaskAssigned', (e) => updateTaskLocally(e.task));
 
-        // Real-time Assignment Listener
-        if (window.Echo) {
-            window.Echo.channel('tasks')
-                .listen('TaskAssigned', (e) => {
-                    // Check if this specific employee is part of the new task
-                    const isAssignedToMe = e.task.users.some(u => u.id === user.id);
-
-                    if (isAssignedToMe) {
-                        console.log("New Mission Received:", e.task.title);
-                        fetchMyTasks(); // Update the board immediately
-                    }
-                });
-        }
-
-        return () => clearInterval(interval);
+        return () => echo.leaveChannel('tasks');
     }, [user.id]);
 
-    // 3. Action Handlers
     const handleStatusUpdate = async (taskId, newStatus) => {
         try {
+            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus } : t));
             await api.patch(`/tasks/${taskId}/status`, { status: newStatus });
-            fetchMyTasks(); // Force refresh to sync with backend
-        } catch (error) {
-            alert("Failed to update task status. Please check your connection.");
+        } catch (error) { fetchMyTasks(); }
+    };
+
+    const handleDragEnd = async (event) => {
+        const { active, over } = event;
+        setActiveId(null);
+        if (!over) return;
+        const activeTask = tasks.find(t => t.id === active.id);
+        let targetStatus = over.id;
+        if (!['pending', 'in_progress', 'completed'].includes(over.id)) {
+            targetStatus = tasks.find(t => t.id === over.id)?.status;
+        }
+        if (targetStatus && activeTask.status !== targetStatus) {
+            handleStatusUpdate(active.id, targetStatus);
         }
     };
 
-    const getStatusColor = (status) => {
-        switch (status) {
-            case 'completed': return 'success';
-            case 'in_progress': return 'warning';
-            default: return 'primary';
-        }
-    };
-
-    if (loading) return (
-        <Box sx={{ width: '100%', mt: 4 }}>
-            <LinearProgress />
-        </Box>
-    );
+    if (loading) return <LinearProgress />;
 
     return (
-        <Box>
-            <Box sx={{ mb: 4, display: 'flex', alignItems: 'center' }}>
-                <AssignmentIcon sx={{ fontSize: 40, mr: 2, color: 'primary.main' }} />
-                <Typography variant="h4" sx={{ fontWeight: 'bold' }}>
-                    My Operations Board
-                </Typography>
-            </Box>
-
-            {tasks.length === 0 ? (
-                <Paper elevation={0} sx={{ p: 6, textAlign: 'center', bgcolor: 'transparent', border: '2px dashed #ccc' }}>
-                    <Typography variant="h6" color="text.secondary">
-                        No active assignments found.
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                        New missions will appear here automatically when assigned.
-                    </Typography>
-                </Paper>
-            ) : (
+        <Container maxWidth={false} sx={{ px: { xs: 2, lg: 5 }, py: 4 }}>
+            <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 4 }}>
+                <Box sx={{ p: 1.2, borderRadius: '10px', background: 'linear-gradient(135deg, #4f46e5, #06b6d4)', color: 'white', display: 'flex' }}>
+                    <AssignmentRoundedIcon sx={{ fontSize: 28 }} />
+                </Box>
+                <Box><Typography variant="h4" sx={{ fontWeight: 800 }}>My Board</Typography></Box>
+            </Stack>
+            <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={(e) => setActiveId(e.active.id)} onDragEnd={handleDragEnd}>
                 <Grid container spacing={3}>
-                    {tasks.map(task => (
-                        <Grid item xs={12} md={6} lg={4} key={task.id}>
-                            <Card
-                                elevation={3}
-                                sx={{
-                                    height: '100%',
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    borderRadius: 3,
-                                    borderTop: `6px solid ${task.status === 'completed' ? '#2e7d32' :
-                                            task.status === 'in_progress' ? '#ed6c02' : '#1976d2'
-                                        }`,
-                                    transition: 'transform 0.2s',
-                                    '&:hover': { transform: 'translateY(-4px)' }
-                                }}
-                            >
-                                <CardContent sx={{ flexGrow: 1 }}>
-                                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-                                        <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                                            {task.title}
-                                        </Typography>
-                                        <Chip
-                                            label={task.status.toUpperCase().replace('_', ' ')}
-                                            size="small"
-                                            color={getStatusColor(task.status)}
-                                            sx={{ fontWeight: 'bold' }}
-                                        />
-                                    </Stack>
-
-                                    <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                                        {task.description || "Mission details pending..."}
-                                    </Typography>
-
-                                    <Divider sx={{ my: 2 }} />
-
-                                    <Box sx={{ mt: 'auto' }}>
-                                        {task.status === 'pending' && (
-                                            <Button
-                                                variant="contained"
-                                                fullWidth
-                                                startIcon={<PlayArrowIcon />}
-                                                onClick={() => handleStatusUpdate(task.id, 'in_progress')}
-                                                sx={{ borderRadius: 2, fontWeight: 'bold' }}
-                                            >
-                                                Accept & Start
-                                            </Button>
-                                        )}
-                                        {task.status === 'in_progress' && (
-                                            <Button
-                                                variant="contained"
-                                                color="success"
-                                                fullWidth
-                                                startIcon={<CheckCircleIcon />}
-                                                onClick={() => handleStatusUpdate(task.id, 'completed')}
-                                                sx={{ borderRadius: 2, fontWeight: 'bold' }}
-                                            >
-                                                Complete Mission
-                                            </Button>
-                                        )}
-                                        {task.status === 'completed' && (
-                                            <Box sx={{
-                                                textAlign: 'center', py: 1, bgcolor: '#e8f5e9',
-                                                borderRadius: 2, color: 'success.main', fontWeight: 'bold'
-                                            }}>
-                                                Mission Accomplished
-                                            </Box>
-                                        )}
-                                    </Box>
-                                </CardContent>
-                            </Card>
-                        </Grid>
-                    ))}
+                    <KanbanColumn status="pending" tasks={tasks.filter(t => t.status === 'pending')} onStatusUpdate={handleStatusUpdate} />
+                    <KanbanColumn status="in_progress" tasks={tasks.filter(t => t.status === 'in_progress')} onStatusUpdate={handleStatusUpdate} />
+                    <KanbanColumn status="completed" tasks={tasks.filter(t => t.status === 'completed')} onStatusUpdate={handleStatusUpdate} />
                 </Grid>
-            )}
-        </Box>
+                <DragOverlay>{activeId ? <Card elevation={10} sx={{ p: 2, width: 300 }}><Typography sx={{ fontWeight: 700 }}>{tasks.find(t => t.id === activeId).title}</Typography></Card> : null}</DragOverlay>
+            </DndContext>
+        </Container>
     );
 }
