@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Task;
 use App\Models\User;
 use App\Events\TaskStatusUpdated;
+use App\Events\TaskAssigned;
 
 class TaskController extends Controller
 {
@@ -31,10 +32,12 @@ class TaskController extends Controller
             'user_ids' => 'required|array',
         ]);
 
-        $task = Task::create($validated);
-        $task->users()->sync($request->user_ids);
+       $task = Task::create($request->only('title', 'description'));
+       $task->users()->sync($request->user_ids);
 
-        return response()->json($task->load('users'), 201);
+       broadcast(new TaskAssigned($task))->toOthers();
+
+       return response()->json($task->load('users'), 201);
     }
     
     public function updateStatus(Request $request, Task $task)
